@@ -786,6 +786,52 @@ test_done_task_open_pr_still_observed() {
   pass 'an open PR linked from a done task keeps being observed'
 }
 
+test_done_task_terminal_pr_not_reobserved() {
+  local home out later=2026-09-17T08:00:00Z
+  home=$(new_home done-terminal)
+  forge_home "$home"
+  wrap_forge "$home"
+  rm "$home/data/delivery/contributions.json"
+  printf '# Backlog\n\n## Queued\n\n## Done\n- [x] delivery - Shipped https://github.com/o/r/pull/8 (repo: sample) (kind: ship)\n' \
+    > "$home/data/backlog.md"
+  printf 'merged\n' > "$home/forge/state"
+  with_home "$home" "$ROOT/bin/fm-contributions.sh" poll >/dev/null || fail 'first poll of a done task PR failed'
+  jq -e '.records[0].observation.state == "merged" and .records[0].error == null' \
+    "$home/data/delivery/contributions.json" >/dev/null || fail 'the done task PR was not recorded as merged'
+  : > "$home/forge/calls"
+  printf 'down\n' > "$home/forge/fault"
+  out=$(with_home "$home" env FM_CONTRIBUTIONS_NOW="$later" "$ROOT/bin/fm-contributions.sh" poll) \
+    || fail 'second poll of a done task terminal PR failed'
+  [ -z "$out" ] || fail "a merged PR linked from a done task woke on a later poll: $out"
+  [ ! -s "$home/forge/calls" ] || fail 'a merged PR linked from a done task was re-read from the forge'
+  [ ! -s "$home/state/.wake-queue" ] || fail 'a merged PR linked from a done task enqueued a wake'
+  pass 'a merged PR linked from a done task is never re-observed'
+}
+
+test_second_url_needs_minimum_observation_reserve() {
+  local home out calls changed
+  home=$(new_home min-observe-reserve)
+  forge_home "$home"
+  wrap_forge "$home"
+  record "$home" second 9 open mergeable
+  mutate_record "$home" delivery '.records[0].checked_at="2026-09-15T08:00:00Z"'
+  mutate_record "$home" second '.records[0].checked_at="2026-09-15T08:00:00Z"'
+  /bin/date +%s > "$home/forge/clock"
+  out=$(with_home "$home" env FM_CHECK_TIMEOUT=6 "$ROOT/bin/fm-contributions.sh" poll) \
+    || fail 'poll under a small watcher check bound with two known URLs failed'
+  [ -z "$out" ] || fail "a minimum-reserve deferral printed a wake: $out"
+  calls=$(grep -cE '^api repos/o/r/pulls/[89]$' "$home/forge/calls")
+  [ "$calls" -eq 1 ] || fail "expected exactly one observation attempt under the clamped budget, got $calls"
+  changed=0
+  jq -e --arg now "$NOW" '.records[0].checked_at == $now' "$home/data/delivery/contributions.json" >/dev/null \
+    && changed=$((changed + 1))
+  jq -e --arg now "$NOW" '.records[0].checked_at == $now' "$home/data/second/contributions.json" >/dev/null \
+    && changed=$((changed + 1))
+  [ "$changed" -eq 1 ] || fail "expected exactly one of the two URLs to be freshly observed, got $changed"
+  [ ! -s "$home/state/.wake-queue" ] || fail 'a minimum-reserve deferral enqueued a wake'
+  pass 'a second URL waits for the minimum observation reserve behind a clamped budget'
+}
+
 test_reservation_defers_later_url_when_fifteen_seconds_do_not_remain() {
   local home out
   home=$(new_home reservation)
@@ -1029,7 +1075,7 @@ test_late_owner_keeps_failure_episode_suppressed() {
 }
 
 failures=0
-for test_name in test_actor_coverage test_stale_verdict test_unchecked_is_not_silence test_newest_check_has_no_verdict test_comment_wake test_review_wake test_inline_wake test_ready_issue_wake test_fresh_issue_requires_maintainer test_missing_lane_remains_missing test_partial_freshness_keeps_measured_rows test_malformed_record_cannot_prove_silence test_issue_timeline_and_exact_ack test_verdict_retains_judged_head test_observed_replacement_refreshes_verdict test_unobserved_head_leaves_verdict_unknown test_away_yolo_is_fleet_work test_away_yolo_cross_home_is_fleet_work test_retired_and_unsupported_coverage test_unsupported_forge_is_not_fleet_work test_held_unsupported_forge_is_not_captain_work test_shared_contribution_signal_wakes_once test_watcher_keeps_diagnostics_separate_from_contribution_wakes test_expired_child_unsupported_forge_stays_unmeasured test_watcher_surfaces_new_contribution_once test_home_summary_coverage test_unreadable_pending_is_not_empty test_record_task_identity_matches_dirname_basename test_read_only_views_create_no_state test_budget_refusal_between_calls test_budget_bounded_call_timeout test_genuine_failure_near_deadline_is_unavailable test_shared_url_observed_once test_terminal_contribution_settles test_late_owner_inherits_terminal_observation test_done_task_open_pr_still_observed test_reservation_defers_later_url_when_fifteen_seconds_do_not_remain test_three_second_pr_reads_complete_fresh_in_one_cycle test_slow_read_deadline_kill_is_budget_refusal test_unmeasured_url_does_not_starve_the_tail test_budget_is_cut_down_to_the_watcher_check_bound test_arm_plumbs_a_configured_budget_into_the_check_shim test_unavailable_forge_records_error_and_wakes_once_per_episode test_late_owner_keeps_failure_episode_suppressed; do
+for test_name in test_actor_coverage test_stale_verdict test_unchecked_is_not_silence test_newest_check_has_no_verdict test_comment_wake test_review_wake test_inline_wake test_ready_issue_wake test_fresh_issue_requires_maintainer test_missing_lane_remains_missing test_partial_freshness_keeps_measured_rows test_malformed_record_cannot_prove_silence test_issue_timeline_and_exact_ack test_verdict_retains_judged_head test_observed_replacement_refreshes_verdict test_unobserved_head_leaves_verdict_unknown test_away_yolo_is_fleet_work test_away_yolo_cross_home_is_fleet_work test_retired_and_unsupported_coverage test_unsupported_forge_is_not_fleet_work test_held_unsupported_forge_is_not_captain_work test_shared_contribution_signal_wakes_once test_watcher_keeps_diagnostics_separate_from_contribution_wakes test_expired_child_unsupported_forge_stays_unmeasured test_watcher_surfaces_new_contribution_once test_home_summary_coverage test_unreadable_pending_is_not_empty test_record_task_identity_matches_dirname_basename test_read_only_views_create_no_state test_budget_refusal_between_calls test_budget_bounded_call_timeout test_genuine_failure_near_deadline_is_unavailable test_shared_url_observed_once test_terminal_contribution_settles test_late_owner_inherits_terminal_observation test_done_task_open_pr_still_observed test_done_task_terminal_pr_not_reobserved test_second_url_needs_minimum_observation_reserve test_reservation_defers_later_url_when_fifteen_seconds_do_not_remain test_three_second_pr_reads_complete_fresh_in_one_cycle test_slow_read_deadline_kill_is_budget_refusal test_unmeasured_url_does_not_starve_the_tail test_budget_is_cut_down_to_the_watcher_check_bound test_arm_plumbs_a_configured_budget_into_the_check_shim test_unavailable_forge_records_error_and_wakes_once_per_episode test_late_owner_keeps_failure_episode_suppressed; do
   ( "$test_name" ) || failures=$((failures + 1))
 done
 [ "$failures" -eq 0 ] || fail "$failures contribution regressions"

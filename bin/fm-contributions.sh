@@ -40,7 +40,12 @@
 # refusal, never a forge failure. A pull observation has three
 # dependent waves: core, six independent reads, then the closing head read;
 # an issue has two waves. Before starting a URL, poll reserves the smaller of
-# the effective budget and 15 seconds for those waves. URLs needing forge
+# the effective budget and 15 seconds for those waves; the first URL of a
+# poll is always given that try, even on a deliberately tiny configured or
+# watcher-clamped budget, but every later URL also needs at least
+# FM_CONTRIBUTIONS_MIN_OBSERVE_SECONDS (default 5, matching one forge read's
+# own cap) so a small clamped budget cannot let a second or third URL start
+# behind the first on the same near-exhausted remainder. URLs needing forge
 # reads are sorted by URL and rotated by the current five-minute epoch bucket
 # modulo their count, without stored scheduling state or freshness-based
 # reordering. Terminal URLs settle separately before the forge budget starts
@@ -102,6 +107,9 @@ BUDGET=${FM_CONTRIBUTIONS_BUDGET:-20}
 case "$MAX_AGE" in ''|*[!0-9]*) fail 'invalid freshness bound' ;; esac
 case "$BUDGET" in ''|*[!0-9]*) fail 'invalid poll budget' ;; esac
 [ "$BUDGET" -ge 1 ] && [ "$BUDGET" -le 25 ] || fail 'poll budget must be 1..25 seconds'
+MIN_OBSERVE=${FM_CONTRIBUTIONS_MIN_OBSERVE_SECONDS:-5}
+case "$MIN_OBSERVE" in ''|*[!0-9]*) fail 'invalid minimum observation reserve' ;; esac
+[ "$MIN_OBSERVE" -ge 1 ] && [ "$MIN_OBSERVE" -le 15 ] || fail 'minimum observation reserve must be 1..15 seconds'
 CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}
 case "$CHECK_TIMEOUT" in ''|*[!0-9]*|0) CHECK_TIMEOUT=30 ;; esac
 BUDGET_CAP=$((CHECK_TIMEOUT - 3))
@@ -346,7 +354,7 @@ settle_final() { # canonical-url task... : copy the URL's final observation to e
 }
 
 poll() {
-  local task url old kind error observed
+  local task url old kind error observed attempted reserve
   local -a row
   acquire
   get_input
@@ -375,11 +383,23 @@ poll() {
     | .[]' < "$TMP/live.tsv" > "$TMP/known.tsv"
   DEADLINE=$(( $(date +%s) + BUDGET ))
   OBSERVATION_RESERVE=$((BUDGET < 15 ? BUDGET : 15))
+  attempted=0
   while IFS=$'\t' read -r -a row; do
-    [ $((DEADLINE - $(date +%s))) -ge "$OBSERVATION_RESERVE" ] || break
+    # The first URL always gets a try, even on a deliberately tiny configured
+    # or watcher-clamped budget, so it stays measured rather than mislabeled.
+    # Every later URL also needs the configured minimum observation reserve,
+    # so a small clamped budget cannot let a second or third URL squeeze in
+    # behind the first on the same wafer-thin remainder.
+    if [ "$attempted" -eq 0 ]; then
+      reserve=$OBSERVATION_RESERVE
+    else
+      reserve=$((OBSERVATION_RESERVE > MIN_OBSERVE ? OBSERVATION_RESERVE : MIN_OBSERVE))
+    fi
+    [ $((DEADLINE - $(date +%s))) -ge "$reserve" ] || break
     url=${row[0]}
     observed=0
     observe "$url" || observed=$?
+    attempted=1
     [ "$BUDGET_EXHAUSTED" -eq 0 ] || continue
     # Wake once per failure episode: only when no owner has a prior error.
     if [ "$observed" -ne 0 ] && jq -ne --slurpfile saved "$TMP/saved.json" --arg url "$url" --args \

@@ -29,7 +29,10 @@ def known($input; $saved):
      | select(.pr.url | canonical_url) | {task:.id,url:.pr.url}]
    + [($input.backlog.records // [])[] | select(.structured == true) as $task
       | ($task.links // [])[] | select(canonical_url) | {task:$task.id,url:.}]
-   + [$saved[] | .task as $task | .records[] | {task:$task,url}])
+   + [$saved[] | .task as $task
+      | (([($input.tasks // [])[] | .id] + [($input.backlog.records // [])[] | select(.structured == true) | .id]) | index($task) != null) as $live
+      | .records[] | select($live or .observation == null or (.observation.state | IN("merged","closed") | not))
+      | {task:$task,url}])
   | unique_by([.task,.url]);
 def latest_checks:
   group_by(.name) | map(sort_by([(.started_at // ""),(.id // 0)]) | last);
